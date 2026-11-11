@@ -1,5 +1,7 @@
 # hyprflick
 
+![Two fingers flick sideways on a touchpad and the row of windows slides over one window at a time](docs/hyprflick.gif)
+
 Flick two fingers sideways on your touchpad and Hyprland's scrolling layout moves one window over.
 
 Hyprland's scrolling layout is a long strip of windows, wider than your screen. You can scroll it with three fingers, but three fingers is also the usual gesture for drag and workspace switching, and two fingers is what your hand expects. Hyprland can't do this on its own. The touchpad driver reports a two-finger swipe as ordinary scrolling, never as a gesture, and Hyprland only lets you bind scrolling from a physical mouse wheel. So it takes a plugin.
@@ -108,6 +110,8 @@ These were tried first. Don't retry them.
 
 - `main.cpp`: the whole plugin.
 - `Makefile`: one-line build, flags copied from the official hyprland-plugins.
+- `demo/`: Remotion source for the README animation (`npx remotion render src/index.ts Demo out/hyprflick.mp4`).
+- `docs/hyprflick.gif`: the README animation.
 - `hyprpm.toml`: manifest for `hyprpm add`. To support older Hyprland versions later, pin plugin commits to Hyprland commits in `commit_pins`.
 
 ## License
