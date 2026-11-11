@@ -4,25 +4,25 @@ import {AbsoluteFill, Easing, interpolate, spring, useCurrentFrame, useVideoConf
 // Flicks: frame each one starts, finger direction (-1 = fingers move left,
 // which pulls the next window in from the right), and the tape column after it.
 const FLICKS = [
-  {at: 45, dir: -1},
-  {at: 95, dir: -1},
-  {at: 145, dir: -1},
-  {at: 205, dir: -1}, // last window already in view: boing
-  {at: 265, dir: 1},
-  {at: 305, dir: 1},
-  {at: 345, dir: 1},
-  {at: 400, dir: 1}, // first window already in view: boing
+  {at: 28, dir: -1},
+  {at: 59, dir: -1},
+  {at: 90, dir: -1},
+  {at: 127, dir: -1}, // last window already in view: boing
+  {at: 164, dir: 1},
+  {at: 189, dir: 1},
+  {at: 214, dir: 1},
+  {at: 248, dir: 1}, // first window already in view: boing
 ];
-export const DURATION = 500;
+export const DURATION = 310;
 
 const CAPTIONS = [
-  {from: 0, to: 52, text: 'Flick two fingers sideways'},
-  {from: 52, to: 95, text: 'The view moves. Focus stays put.'},
-  {from: 95, to: 195, text: 'One flick, one window'},
-  {from: 195, to: 258, text: 'Boing: no more windows that way'},
-  {from: 258, to: 390, text: 'Flick back the other way'},
-  {from: 390, to: 445, text: 'Boing at both ends'},
-  {from: 445, to: DURATION, text: 'hyprflick  ·  a Hyprland plugin'},
+  {from: 0, to: 32, text: 'Flick two fingers sideways'},
+  {from: 32, to: 78, text: 'The view moves. Focus stays put.'},
+  {from: 78, to: 121, text: 'One flick, one window'},
+  {from: 121, to: 160, text: 'Boing: no more windows that way'},
+  {from: 160, to: 242, text: 'Flick back the other way'},
+  {from: 242, to: 276, text: 'Boing at both ends'},
+  {from: 276, to: DURATION, text: 'hyprflick  ·  a Hyprland plugin'},
 ];
 
 const C = {
@@ -97,7 +97,7 @@ function useTapeOffset(frame: number, fps: number) {
       boing += -f.dir * BOING * (out - back);
       return;
     }
-    const s = spring({frame: frame - start, fps, config: {damping: 200, stiffness: 120, mass: 0.8}});
+    const s = spring({frame: frame - start, fps, config: {damping: 200, stiffness: 200, mass: 0.7}});
     o = o + (target - o) * s;
   });
   return o + boing;
