@@ -1,0 +1,12 @@
+[repository]
+name = "hyprflick"
+authors = ["Eli Finer"]
+commit_pins = []
+
+[hyprflick]
+description = "Two-finger touchpad flicks move the scrolling layout one column"
+authors = ["Eli Finer"]
+output = "hyprflick.so"
+build = [
+    "make all",
+]
