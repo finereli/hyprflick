@@ -7,19 +7,22 @@ const FLICKS = [
   {at: 45, dir: -1},
   {at: 95, dir: -1},
   {at: 145, dir: -1},
-  {at: 205, dir: -1}, // already at the last window: nothing moves
-  {at: 270, dir: 1},
-  {at: 320, dir: 1},
+  {at: 205, dir: -1}, // last window already in view: boing
+  {at: 265, dir: 1},
+  {at: 305, dir: 1},
+  {at: 345, dir: 1},
+  {at: 400, dir: 1}, // first window already in view: boing
 ];
-export const DURATION = 400;
+export const DURATION = 500;
 
 const CAPTIONS = [
   {from: 0, to: 52, text: 'Flick two fingers sideways'},
   {from: 52, to: 95, text: 'The view moves. Focus stays put.'},
-  {from: 95, to: 192, text: 'One flick, one window'},
-  {from: 192, to: 258, text: 'It stops at the last window'},
-  {from: 258, to: 345, text: 'Flick back the other way'},
-  {from: 345, to: DURATION, text: 'hyprflick  ·  a Hyprland plugin'},
+  {from: 95, to: 195, text: 'One flick, one window'},
+  {from: 195, to: 258, text: 'Boing: no more windows that way'},
+  {from: 258, to: 390, text: 'Flick back the other way'},
+  {from: 390, to: 445, text: 'Boing at both ends'},
+  {from: 445, to: DURATION, text: 'hyprflick  ·  a Hyprland plugin'},
 ];
 
 const C = {
@@ -76,15 +79,28 @@ const FLICK_LEN = 24;
 
 const ease = Easing.bezier(0.2, 0.7, 0.2, 1);
 
+const BOING = 30;
+
 function useTapeOffset(frame: number, fps: number) {
   let o = 0;
+  let prevTarget = 0;
+  let boing = 0;
   FLICKS.forEach((f, k) => {
     const target = OFFSETS[k];
-    if (target === o) return;
-    const s = spring({frame: frame - f.at - 7, fps, config: {damping: 200, stiffness: 120, mass: 0.8}});
+    const start = f.at + 7;
+    const same = target === prevTarget;
+    prevTarget = target;
+    if (same) {
+      // Nudge past the end, hold ~120 ms, spring back.
+      const out = spring({frame: frame - start, fps, config: {damping: 14, stiffness: 260, mass: 0.6}});
+      const back = spring({frame: frame - start - 4, fps, config: {damping: 12, stiffness: 180, mass: 0.7}});
+      boing += -f.dir * BOING * (out - back);
+      return;
+    }
+    const s = spring({frame: frame - start, fps, config: {damping: 200, stiffness: 120, mass: 0.8}});
     o = o + (target - o) * s;
   });
-  return o;
+  return o + boing;
 }
 
 const Window: React.FC<{i: number; x: number}> = ({i, x}) => {
