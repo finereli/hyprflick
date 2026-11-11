@@ -24,6 +24,7 @@
 #include <hyprland/src/layout/algorithm/tiled/scrolling/ScrollTapeController.hpp>
 #undef private
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
+#include <hyprland/src/managers/eventLoop/EventLoopTimer.hpp>
 #include <hyprland/src/config/values/types/BoolValue.hpp>
 #include <hyprland/src/config/values/types/FloatValue.hpp>
 #include <hyprland/src/config/values/types/IntValue.hpp>
@@ -31,6 +32,7 @@
 #include <cmath>
 #include <algorithm>
 #include <optional>
+#include <chrono>
 
 static HANDLE PHANDLE = nullptr;
 
@@ -39,7 +41,29 @@ static struct {
     SP<Config::Values::CFloatValue> threshold;
     SP<Config::Values::CBoolValue>  invert;
     SP<Config::Values::CIntValue>   gapMs;
+    SP<Config::Values::CIntValue>   bounce;
 } cfg;
+
+// The "boing" at either end: nudge the tape past the end, then put it back.
+static struct {
+    SP<CEventLoopTimer> timer;
+    PHLWORKSPACEREF     ws;
+    double              restoreOffset = 0;
+    bool                active        = false;
+    std::optional<long> restoreFitMethod;
+} boing;
+
+// Hyprland snaps a negative tape offset back to 0 whenever
+// scrolling:focus_fit_method is "fit" (1), which would cancel a boing past the
+// left end. Switching it to "center" (0) for the length of the boing lets the
+// tape go negative. Function hooks would be cleaner but are x86_64 only.
+static Config::INTEGER* fitMethodPtr() {
+    static const auto PFITMETHOD = CConfigValue<Config::INTEGER>("scrolling:focus_fit_method");
+    return PFITMETHOD.ptr();
+}
+
+static constexpr auto BOING_HOLD = std::chrono::milliseconds(120);
+
 
 // One flick is a run of finger scroll events without a long gap or a stop.
 static struct {
@@ -69,22 +93,72 @@ static PHLWORKSPACE scrollingWorkspace() {
     return WS;
 }
 
-// Move the view, never the focus. Forward lines up the first column that
-// sticks out past the right edge with that edge; backward lines up the first
-// column hidden past the left edge with the left edge. At either end of the
-// strip there is nothing hidden, so nothing moves.
-static void scrollOneColumn(PHLWORKSPACE ws, bool forward) {
-    static const auto PFSONONE = CConfigValue<Config::INTEGER>("scrolling:fullscreen_on_one_column");
-
-    if (!ws->m_space || !ws->m_space->algorithm() || !ws->m_space->algorithm()->tiledAlgo())
-        return;
+static CScrollingAlgorithm* scrollingAlgoFor(PHLWORKSPACE ws) {
+    if (!ws || !ws->m_space || !ws->m_space->algorithm() || !ws->m_space->algorithm()->tiledAlgo())
+        return nullptr;
 
     const auto ALGO = ws->m_space->algorithm()->tiledAlgo().get();
     if (Layout::Supplementary::algoMatcher()->getNameForTiledAlgo(ALGO) != "scrolling")
-        return;
+        return nullptr;
 
     auto* scrolling = static_cast<CScrollingAlgorithm*>(ALGO);
     if (!scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return nullptr;
+
+    return scrolling;
+}
+
+static void endBoing() {
+    if (!boing.active)
+        return;
+    boing.active = false;
+    boing.timer->updateTimeout(std::nullopt);
+
+    auto* scrolling = scrollingAlgoFor(boing.ws.lock());
+    if (scrolling)
+        scrolling->m_scrollingData->controller->setOffset(boing.restoreOffset);
+
+    if (boing.restoreFitMethod) {
+        *fitMethodPtr() = *boing.restoreFitMethod;
+        boing.restoreFitMethod.reset();
+    }
+
+    if (scrolling)
+        scrolling->m_scrollingData->recalculate();
+}
+
+static void startBoing(PHLWORKSPACE ws, CScrollingAlgorithm* scrolling, bool forward) {
+    const int DIST = cfg.bounce->value();
+    if (DIST <= 0)
+        return;
+
+    auto& tape          = *scrolling->m_scrollingData->controller;
+    boing.ws            = ws;
+    boing.restoreOffset = tape.getOffset();
+    boing.active        = true;
+
+    const double OUT = boing.restoreOffset + (forward ? DIST : -DIST);
+    if (OUT < 0) {
+        boing.restoreFitMethod = *fitMethodPtr();
+        *fitMethodPtr()        = 0;
+    }
+
+    tape.setOffset(boing.restoreOffset + (forward ? DIST : -DIST));
+    scrolling->m_scrollingData->recalculate();
+    boing.timer->updateTimeout(BOING_HOLD);
+}
+
+// Move the view, never the focus. Forward lines up the first column that
+// sticks out past the right edge with that edge; backward lines up the first
+// column hidden past the left edge with the left edge. At either end of the
+// strip there is nothing hidden, so it boings instead.
+static void scrollOneColumn(PHLWORKSPACE ws, bool forward) {
+    static const auto PFSONONE = CConfigValue<Config::INTEGER>("scrolling:fullscreen_on_one_column");
+
+    endBoing(); // finish any bounce in progress so offsets start from rest
+
+    auto* scrolling = scrollingAlgoFor(ws);
+    if (!scrolling)
         return;
 
     auto&        tape   = *scrolling->m_scrollingData->controller;
@@ -120,10 +194,16 @@ static void scrollOneColumn(PHLWORKSPACE ws, bool forward) {
         }
     }
 
-    if (!target)
-        return;
+    if (target)
+        target = std::clamp(*target, 0.0, MAXOFF);
 
-    tape.setOffset(std::clamp(*target, 0.0, MAXOFF));
+    // Nothing hidden that way, or already lined up: boing instead.
+    if (!target || std::abs(*target - OFFSET) < EPS) {
+        startBoing(ws, scrolling, forward);
+        return;
+    }
+
+    tape.setOffset(*target);
     scrolling->m_scrollingData->recalculate();
 }
 
@@ -198,11 +278,23 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, cfg.enabled);
     HyprlandAPI::addConfigValueV2(PHANDLE, cfg.threshold);
     HyprlandAPI::addConfigValueV2(PHANDLE, cfg.invert);
+    cfg.bounce    = makeShared<Config::Values::CIntValue>("plugin:hyprflick:bounce", "Pixels to bounce past the end when there is nothing more to scroll to (0 = off)", 40,
+                                                          Config::Values::SIntValueOptions{.min = 0, .max = 400});
+
     HyprlandAPI::addConfigValueV2(PHANDLE, cfg.gapMs);
+    HyprlandAPI::addConfigValueV2(PHANDLE, cfg.bounce);
+
+    boing.timer = makeShared<CEventLoopTimer>(std::nullopt, [](SP<CEventLoopTimer>, void*) { endBoing(); }, nullptr);
+    g_pEventLoopManager->addTimer(boing.timer);
 
     static auto P = Event::bus()->m_events.input.mouse.axis.listen([](IPointer::SAxisEvent e, Event::SCallbackInfo& info) { onAxis(e, info); });
 
     return {"hyprflick", "Two-finger touchpad flicks move the scrolling layout one column", "Eli Finer", "0.1"};
 }
 
-APICALL EXPORT void PLUGIN_EXIT() {}
+APICALL EXPORT void PLUGIN_EXIT() {
+    endBoing();
+    if (boing.timer)
+        g_pEventLoopManager->removeTimer(boing.timer);
+    boing.timer.reset();
+}
