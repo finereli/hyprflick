@@ -21,6 +21,8 @@
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
+#include <hyprland/src/managers/SeatManager.hpp>
+#include <hyprland/src/protocols/core/Compositor.hpp>
 #define private public
 #include <hyprland/src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.hpp>
 #include <hyprland/src/layout/algorithm/tiled/scrolling/ScrollTapeController.hpp>
@@ -259,7 +261,13 @@ static void onAxis(IPointer::SAxisEvent e, Event::SCallbackInfo& info) {
 // Typing goes to the focused window even after a flick has slid it out of
 // view. So when a key press is headed for that window, bring its column back
 // first, the same way Hyprland frames a window when focus moves to it.
-static bool isModifierKey(uint32_t keycode) {
+// Only keys that type or move a cursor count. Codes below KEY_MUTE cover the
+// main block, F1-F12, arrows, the edit keys and the keypad; above that are
+// volume, brightness and media keys, which are bound to the system. Print
+// (KEY_SYSRQ) is a screenshot, and modifiers alone type nothing.
+static bool isTypingKey(uint32_t keycode) {
+    if (keycode >= KEY_MUTE)
+        return false;
     switch (keycode) {
         case KEY_LEFTSHIFT:
         case KEY_RIGHTSHIFT:
@@ -267,12 +275,20 @@ static bool isModifierKey(uint32_t keycode) {
         case KEY_RIGHTCTRL:
         case KEY_LEFTALT:
         case KEY_RIGHTALT:
-        case KEY_LEFTMETA:
-        case KEY_RIGHTMETA:
         case KEY_CAPSLOCK:
-        case KEY_FN: return true;
-        default: return false;
+        case KEY_SYSRQ: return false;
+        default: return true;
     }
+}
+
+// True when the keyboard is on the focused window itself, not on a launcher,
+// lock screen or other layer surface sitting above it.
+static bool keyboardOnFocusedWindow() {
+    const auto WINDOW = Desktop::focusState()->window();
+    if (!WINDOW || !WINDOW->wlSurface())
+        return false;
+    const auto KBFOCUS = g_pSeatManager->m_state.keyboardFocus.lock();
+    return KBFOCUS && KBFOCUS == WINDOW->wlSurface()->resource();
 }
 
 static void returnToFocused() {
@@ -310,9 +326,12 @@ static void onKey(IKeyboard::SKeyEvent e) {
     if (!cfg.enabled->value() || !cfg.returnOnType->value() || e.state != WL_KEYBOARD_KEY_STATE_PRESSED)
         return;
 
-    // Modifiers alone type nothing, and Super combos are compositor shortcuts,
-    // not typing, so leave the view alone for those.
-    if (isModifierKey(e.keycode) || (g_pInputManager->getModsFromAllKBs() & HL_MODIFIER_META))
+    // Super combos are compositor shortcuts, not typing, so leave the view
+    // alone for those.
+    if (!isTypingKey(e.keycode) || (g_pInputManager->getModsFromAllKBs() & HL_MODIFIER_META))
+        return;
+
+    if (!keyboardOnFocusedWindow())
         return;
 
     g_pEventLoopManager->doLater([] { returnToFocused(); });
