@@ -19,6 +19,8 @@
 #include <hyprland/src/layout/algorithm/TiledAlgorithm.hpp>
 #include <hyprland/src/layout/supplementary/WorkspaceAlgoMatcher.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
+#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/managers/input/InputManager.hpp>
 #define private public
 #include <hyprland/src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.hpp>
 #include <hyprland/src/layout/algorithm/tiled/scrolling/ScrollTapeController.hpp>
@@ -33,6 +35,7 @@
 #include <algorithm>
 #include <optional>
 #include <chrono>
+#include <linux/input-event-codes.h>
 
 static HANDLE PHANDLE = nullptr;
 
@@ -42,6 +45,7 @@ static struct {
     SP<Config::Values::CBoolValue>  invert;
     SP<Config::Values::CIntValue>   gapMs;
     SP<Config::Values::CIntValue>   bounce;
+    SP<Config::Values::CBoolValue>  returnOnType;
 } cfg;
 
 // The "boing" at either end: nudge the tape past the end, then put it back.
@@ -252,6 +256,68 @@ static void onAxis(IPointer::SAxisEvent e, Event::SCallbackInfo& info) {
     });
 }
 
+// Typing goes to the focused window even after a flick has slid it out of
+// view. So when a key press is headed for that window, bring its column back
+// first, the same way Hyprland frames a window when focus moves to it.
+static bool isModifierKey(uint32_t keycode) {
+    switch (keycode) {
+        case KEY_LEFTSHIFT:
+        case KEY_RIGHTSHIFT:
+        case KEY_LEFTCTRL:
+        case KEY_RIGHTCTRL:
+        case KEY_LEFTALT:
+        case KEY_RIGHTALT:
+        case KEY_LEFTMETA:
+        case KEY_RIGHTMETA:
+        case KEY_CAPSLOCK:
+        case KEY_FN: return true;
+        default: return false;
+    }
+}
+
+static void returnToFocused() {
+    const auto WS = scrollingWorkspace();
+    if (!WS)
+        return;
+
+    const auto WINDOW = Desktop::focusState()->window();
+    if (!WINDOW || WINDOW->m_workspace != WS)
+        return;
+
+    auto* scrolling = scrollingAlgoFor(WS);
+    if (!scrolling)
+        return;
+
+    const auto TDATA = scrolling->dataFor(WINDOW->layoutTarget(), true);
+    if (!TDATA)
+        return; // floating, or otherwise not on the tape
+
+    const auto COL = TDATA->column.lock();
+    if (!COL)
+        return;
+
+    endBoing();
+
+    auto& data = *scrolling->m_scrollingData;
+    if (data.visible(COL, true))
+        return;
+
+    data.centerOrFitCol(COL);
+    data.recalculate();
+}
+
+static void onKey(IKeyboard::SKeyEvent e) {
+    if (!cfg.enabled->value() || !cfg.returnOnType->value() || e.state != WL_KEYBOARD_KEY_STATE_PRESSED)
+        return;
+
+    // Modifiers alone type nothing, and Super combos are compositor shortcuts,
+    // not typing, so leave the view alone for those.
+    if (isModifierKey(e.keycode) || (g_pInputManager->getModsFromAllKBs() & HL_MODIFIER_META))
+        return;
+
+    g_pEventLoopManager->doLater([] { returnToFocused(); });
+}
+
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
     return HYPRLAND_API_VERSION;
 }
@@ -284,10 +350,15 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, cfg.gapMs);
     HyprlandAPI::addConfigValueV2(PHANDLE, cfg.bounce);
 
+    cfg.returnOnType = makeShared<Config::Values::CBoolValue>("plugin:hyprflick:return_on_type",
+                                                              "Scroll back to the focused window when you type into it while it's out of view", true);
+    HyprlandAPI::addConfigValueV2(PHANDLE, cfg.returnOnType);
+
     boing.timer = makeShared<CEventLoopTimer>(std::nullopt, [](SP<CEventLoopTimer>, void*) { endBoing(); }, nullptr);
     g_pEventLoopManager->addTimer(boing.timer);
 
     static auto P = Event::bus()->m_events.input.mouse.axis.listen([](IPointer::SAxisEvent e, Event::SCallbackInfo& info) { onAxis(e, info); });
+    static auto K = Event::bus()->m_events.input.keyboard.key.listen([](IKeyboard::SKeyEvent e, Event::SCallbackInfo&) { onKey(e); });
 
     return {"hyprflick", "Two-finger touchpad flicks move the scrolling layout one column", "Eli Finer", "0.1"};
 }
